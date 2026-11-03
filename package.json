@@ -1,0 +1,19 @@
+{
+  "name": "moip-stream-buddy",
+  "version": "1.0.0",
+  "description": "Media over IP Stream Buddy on APK.audio",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "keywords": [
+    "moip",
+    "multicast",
+    "dante",
+    "aes67",
+    "smpte2110",
+    "igmp"
+  ],
+  "author": "Anthony Kuzub",
+  "license": "MIT"
+}

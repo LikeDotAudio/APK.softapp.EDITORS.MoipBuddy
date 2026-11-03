@@ -1,0 +1,8 @@
+{
+  "name": "Media over IP (MoIP) Stream Buddy",
+  "icon": "🌊",
+  "group": "Design",
+  "subGroup": "Network & Topology",
+  "description": "Media-over-IP (MoIP) Stream Buddy: manage multicast stream assignments, IGMP snooping queriers, SDP session descriptions, SMPTE ST 2110 / ST 2022-7 hitless redundancy, and Dante/AES67 audio flows.",
+  "app": "APK:Softapps/EDITORS/EDITORS.MoipBuddy/index.html"
+}
