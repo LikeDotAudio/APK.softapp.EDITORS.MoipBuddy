@@ -160,7 +160,7 @@ export class MoipApp {
           </select>
         </td>
         <td>
-          <span style="font-weight: bold; font-size: 11px; color: ${s.status === 'Active' ? '#4ADE80' : '#8B9BB4'};">
+          <span style="font-weight: bold; font-size: 11px; color: ${s.status === 'Active' ? '#4ADE80' : '#888888'};">
             ${s.status}
           </span>
         </td>
@@ -216,7 +216,7 @@ export class MoipApp {
 
       rowsSvg += `
         <!-- Sender Node -->
-        <rect x="25" y="${y}" width="140" height="24" rx="4" fill="#121A2F" stroke="#2B3C5D" stroke-width="1"/>
+        <rect x="25" y="${y}" width="140" height="24" rx="4" fill="#18181b" stroke="#2B3C5D" stroke-width="1"/>
         <text x="35" y="${y + 16}" fill="#F4902C" font-size="10" font-family="JetBrains Mono, monospace">${s.name}</text>
 
         <!-- Primary Flow (Blue) -->
@@ -230,22 +230,22 @@ export class MoipApp {
         ` : ''}
 
         <!-- Multicast IP & Port Badge -->
-        <rect x="230" y="${y - 4}" width="160" height="16" rx="3" fill="#080C16" stroke="#1E2A45" stroke-width="1"/>
-        <text x="310" y="${y + 8}" fill="#8B9BB4" font-size="9" font-family="JetBrains Mono, monospace" text-anchor="middle">${s.group}:${s.port}</text>
+        <rect x="230" y="${y - 4}" width="160" height="16" rx="3" fill="#121212" stroke="#2c2c2c" stroke-width="1"/>
+        <text x="310" y="${y + 8}" fill="#888888" font-size="9" font-family="JetBrains Mono, monospace" text-anchor="middle">${s.group}:${s.port}</text>
 
         <!-- Receiver / Fabric Node -->
-        <rect x="455" y="${y}" width="160" height="24" rx="4" fill="#121A2F" stroke="#2B3C5D" stroke-width="1"/>
+        <rect x="455" y="${y}" width="160" height="24" rx="4" fill="#18181b" stroke="#2B3C5D" stroke-width="1"/>
         <text x="465" y="${y + 16}" fill="#4ADE80" font-size="10" font-family="sans-serif">${s.format} (${s.channels} Ch)</text>
       `;
     });
 
     const svg = `
       <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" xmlns="http://www.w3.org/2000/svg">
-        <rect x="0" y="0" width="${width}" height="${height}" fill="#080C16" rx="8"/>
-        <text x="25" y="20" fill="#8B9BB4" font-size="10" font-family="sans-serif" text-transform="uppercase">Stream Senders</text>
-        <text x="310" y="20" fill="#8B9BB4" font-size="10" font-family="sans-serif" text-anchor="middle" text-transform="uppercase">Multicast Fabric</text>
-        <text x="455" y="20" fill="#8B9BB4" font-size="10" font-family="sans-serif" text-transform="uppercase">Subscribers</text>
-        <line x1="20" y1="24" x2="620" y2="24" stroke="#1E2A45" stroke-width="1"/>
+        <rect x="0" y="0" width="${width}" height="${height}" fill="#121212" rx="8"/>
+        <text x="25" y="20" fill="#888888" font-size="10" font-family="sans-serif" text-transform="uppercase">Stream Senders</text>
+        <text x="310" y="20" fill="#888888" font-size="10" font-family="sans-serif" text-anchor="middle" text-transform="uppercase">Multicast Fabric</text>
+        <text x="455" y="20" fill="#888888" font-size="10" font-family="sans-serif" text-transform="uppercase">Subscribers</text>
+        <line x1="20" y1="24" x2="620" y2="24" stroke="#2c2c2c" stroke-width="1"/>
         ${rowsSvg}
       </svg>
     `;
