@@ -1,0 +1,9 @@
+{
+  "_about": "What MoIP Buddy offers from the bus. Tunables only: no code holds a device list. `kinds` picks the media devices (matched as in APKSoftapp.discovered: a case-insensitive substring of a protocol, scanner kind or device_class). `flowFeeds` are the retained flow documents a plugin publishes under System/Protocols/<proto>/<path…>, built with APKContracts.Topics.protocols.topic — PLUGIN.DANTE publishes every resolved flow as one JSON array at dante/Flows (bus/hook/flows.rs, FlowView in flowview.rs). `directions` and `multicastOnly` choose which flows are fabric streams: a transmit flow to a multicast group. A flow's bitrate shown is the audio payload only (channels x sample rate x bit depth), never a wire rate with headers.",
+  "kinds": ["dante", "nmos", "aes67", "ravenna", "st2110", "2110"],
+  "flowFeeds": [
+    { "proto": "dante", "path": ["Flows"], "shape": "dante-flowview" }
+  ],
+  "directions": ["tx"],
+  "multicastOnly": true
+}

@@ -28,6 +28,13 @@ export class MoipStreamModel {
     return s;
   }
 
+  /** A stream read off the network: its values as the bus gave them, no defaults filled in. */
+  addSeen(row = {}) {
+    const s = { id: this.nextId++, ...row };
+    this.streams.push(s);
+    return s;
+  }
+
   removeStream(idOrIdx) {
     if (typeof idOrIdx === 'number' && idOrIdx < this.streams.length && !this.streams.some(s => s.id === idOrIdx)) {
       return this.streams.splice(idOrIdx, 1)[0];
@@ -80,6 +87,7 @@ export class MoipStreamModel {
     if (block.streamPoolName) this.streamPoolName = block.streamPoolName;
     if (Array.isArray(block.streams)) {
       this.streams = JSON.parse(JSON.stringify(block.streams));
+      this.nextId = this.streams.reduce((m, s) => Math.max(m, Number(s.id) || 0), 0) + 1;
     }
   }
 }

@@ -2,33 +2,113 @@
 // MIT Licence. Free, for everyone, for ever. Full text in LICENSE at the root.
 
 import { MoipStreamModel } from './moipModel.js';
-import { BlockBridge } from './blockBridge.js';
+import { parseFlows, streamsFromFlows, streamRow } from './moipDiscovered.js';
+import { mountDiscovered, loadRules } from './discoveredTable.js';
+
+const esc = (s) => window.APKSoftapp.esc(s);
+const REDUNDANCY = ['', 'Hitless ST 2022-7', 'Single Flow', 'Dante Secondary'];
 
 export { MoipStreamModel };
 
 export class MoipApp {
   constructor() {
     this.model = new MoipStreamModel();
-    this.bridge = new BlockBridge({
-      name: 'MoIP Stream Buddy',
-      type: 'moip_streams',
-      onBlockLoaded: (b, m) => this.handleBlockLoaded(b, m),
-      onBlockChanged: () => this.render()
+    /* The CAD link: cad.like.audio/host@1 through vendor/apk-softapp. Same
+       origin only; standalone, Save downloads the block as .json. */
+    this.host = window.APKSoftapp.connectHost({
+      editor: 'MoIP Stream Buddy',
+      blockType: 'moip_streams',
+      onLoad: (b, m) => this.handleBlockLoaded(b, m),
+      onRequest: () => ({ block: this.model.toBlock(), meta: { name: this.model.streamPoolName } }),
     });
 
-    this.tableBody = document.getElementById('streams-table-body');
+    this.seenStreams = [];
+    this.tableHost = document.getElementById('streams-table');
     this.svgContainer = document.getElementById('pipeline-svg');
     this.initControls();
     this.render();
     this.autoConnect();
   }
 
+  changed() {
+    this.host.changed(this.model.toBlock());
+  }
+
+  /* What the bus already carries: the media devices (config/discovery.json
+     kinds) and the streams their plugins publish (flowFeeds, e.g. dante/Flows).
+     Add takes a seen stream into the plan; nothing is copied until asked. */
   async autoConnect() {
-    const discovered = await this.bridge.fetchDiscoveredProject();
-    if (discovered && discovered.moip && discovered.moip.length > 0) {
-      this.model.fromBlock(discovered.moip[0]);
-      this.render();
+    const status = document.getElementById('net-status');
+    const fail = (why) => { if (status) { status.setAttribute('data-apk-state', 'dead'); status.textContent = why; } };
+    let rules;
+    try {
+      rules = await loadRules(import.meta.url);
+    } catch (err) {
+      return fail(`Could not read config/discovery.json (${err.message}).`);
     }
+    this.rules = rules;
+    this.flowTable();
+    const devices = document.getElementById('net-table');
+    if (devices) {
+      this.network = await mountDiscovered({
+        host: devices, status, id: 'moip-devices', kinds: rules.kinds,
+        empty: 'No media device on the bus yet.',
+      });
+    }
+    const S = window.APKSoftapp;
+    const C = S.contracts();
+    const link = C ? await S.bus() : null;
+    if (!C || !link) return;
+    const flows = {};
+    const draw = () => {
+      this.seenStreams = Object.values(flows).flat();
+      this.seenTable?.setRows(this.seenStreams);
+      this.renderTelemetry();
+    };
+    for (const feed of rules.flowFeeds || []) {
+      let topic;
+      try { topic = C.Topics.protocols.topic({ proto: feed.proto, path: feed.path }); } catch (_) { continue; }
+      link.subscribe(topic, (t, text) => {
+        flows[topic] = streamsFromFlows(parseFlows(text, feed.shape), rules);
+        draw();
+      });
+    }
+  }
+
+  flowTable() {
+    const host = document.getElementById('flow-table');
+    if (!host || !window.APKTable) return;
+    this.seenTable = window.APKTable.create(host, {
+      id: 'moip-seen-streams', editable: false,
+      empty: 'No stream on the bus yet (a plugin publishes them: config/discovery.json flowFeeds).',
+      searchPlaceholder: 'device, group',
+      columns: [
+        { key: 'name', label: 'Flow' },
+        { key: 'group', label: 'Multicast Group IP', mono: true },
+        { key: 'port', label: 'UDP Port', type: 'number' },
+        { key: 'channels', label: 'Chs', type: 'number' },
+        { key: 'format', label: 'Format' },
+        { key: 'bandwidthMbps', label: 'Payload (Mbps)', type: 'number' },
+        { key: 'inPlan', label: 'In plan', render: (v, row) => this.addButton(row) },
+      ],
+      rows: [],
+    });
+  }
+
+  addButton(row) {
+    const inPlan = this.model.streams.some((s) => s.source === row.flowId);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'apk-table-btn';
+    b.textContent = inPlan ? 'In plan' : 'Add';
+    b.disabled = inPlan;
+    b.onclick = () => {
+      this.model.addSeen(streamRow(row));
+      this.render();
+      this.seenTable?.setRows(this.seenStreams);
+      this.changed();
+    };
+    return b;
   }
 
   handleBlockLoaded(block, meta) {
@@ -42,7 +122,7 @@ export class MoipApp {
     const btnSave = document.getElementById('btn-save');
     if (btnSave) {
       btnSave.addEventListener('click', () => {
-        this.bridge.saveBlock(this.model.toBlock(), { name: this.model.streamPoolName });
+        this.host.save(this.model.toBlock(), { name: this.model.streamPoolName, filename: this.model.toBlock().id });
       });
     }
 
@@ -61,6 +141,7 @@ export class MoipApp {
               const data = JSON.parse(evt.target.result);
               this.model.fromBlock(data);
               this.render();
+              this.changed();
             } catch (err) {
               alert('Invalid block file: ' + err.message);
             }
@@ -73,20 +154,12 @@ export class MoipApp {
 
     const btnClose = document.getElementById('btn-close');
     if (btnClose) {
-      btnClose.addEventListener('click', () => this.bridge.close());
+      btnClose.addEventListener('click', () => this.host.close());
     }
 
     const btnDiscovered = document.getElementById('btn-discovered');
     if (btnDiscovered) {
-      btnDiscovered.addEventListener('click', async () => {
-        const disc = await this.bridge.fetchDiscoveredProject();
-        if (disc && disc.moip && disc.moip.length > 0) {
-          this.model.fromBlock(disc.moip[0]);
-          this.render();
-        } else {
-          alert('No MoIP stream blocks found in current discovered project.');
-        }
-      });
+      btnDiscovered.addEventListener('click', () => document.body.classList.toggle('net-hidden'));
     }
 
     const btnAddStream = document.getElementById('btn-add-stream');
@@ -94,7 +167,7 @@ export class MoipApp {
       btnAddStream.addEventListener('click', () => {
         this.model.addStream();
         this.render();
-        this.bridge.notifyChanged();
+        this.changed();
       });
     }
 
@@ -102,7 +175,7 @@ export class MoipApp {
     if (propPool) {
       propPool.addEventListener('input', (e) => {
         this.model.streamPoolName = e.target.value;
-        this.bridge.notifyChanged();
+        this.changed();
       });
     }
   }
@@ -134,71 +207,38 @@ export class MoipApp {
     }
   }
 
+  /* The stream plan is an APKTable (vendor/apk-table): APKTable.get('moip-streams'). */
   renderTable() {
-    if (!this.tableBody) return;
-    this.tableBody.innerHTML = '';
-
-    const collisions = this.model.checkCollisions();
-
-    this.model.streams.forEach((s, idx) => {
-      const tr = document.createElement('tr');
-      const isCollision = collisions.some(c => c.id === s.id);
-
-      tr.innerHTML = `
-        <td style="color: var(--text-muted); font-size: 11px;">#${s.id}</td>
-        <td class="inline-cell" contenteditable="true" data-idx="${idx}" data-field="name">${s.name}</td>
-        <td class="inline-cell" contenteditable="true" data-idx="${idx}" data-field="group" style="${isCollision ? 'color: #EF4444; font-weight: bold;' : ''}">${s.group}</td>
-        <td class="inline-cell" contenteditable="true" data-idx="${idx}" data-field="port">${s.port}</td>
-        <td class="inline-cell" contenteditable="true" data-idx="${idx}" data-field="channels">${s.channels}</td>
-        <td class="inline-cell" contenteditable="true" data-idx="${idx}" data-field="format">${s.format}</td>
-        <td class="inline-cell" contenteditable="true" data-idx="${idx}" data-field="bandwidthMbps">${s.bandwidthMbps}</td>
-        <td>
-          <select class="control-select" data-idx="${idx}" data-field="redundancy">
-            <option value="Hitless ST 2022-7" ${s.redundancy === 'Hitless ST 2022-7' ? 'selected' : ''}>Hitless ST 2022-7 (Red + Blue)</option>
-            <option value="Single Flow" ${s.redundancy === 'Single Flow' ? 'selected' : ''}>Single Flow</option>
-            <option value="Dante Secondary" ${s.redundancy === 'Dante Secondary' ? 'selected' : ''}>Dante Redundant</option>
-          </select>
-        </td>
-        <td>
-          <span style="font-weight: bold; font-size: 11px; color: ${s.status === 'Active' ? '#4ADE80' : '#888888'};">
-            ${s.status}
-          </span>
-        </td>
-        <td style="text-align: center;">
-          <button class="btn-delete" data-idx="${idx}" title="Delete Stream">✕</button>
-        </td>
-      `;
-
-      this.tableBody.appendChild(tr);
-    });
-
-    this.tableBody.querySelectorAll('[contenteditable=true]').forEach(cell => {
-      cell.addEventListener('blur', (e) => {
-        const idx = parseInt(e.target.dataset.idx, 10);
-        const field = e.target.dataset.field;
-        this.model.updateStream(idx, field, e.target.innerText.trim());
+    if (!this.tableHost || !window.APKTable) return;
+    if (this.table) { this.table.setRows(this.model.streams); return; }
+    this.table = window.APKTable.create(this.tableHost, {
+      id: 'moip-streams',
+      searchPlaceholder: 'Filter streams',
+      empty: 'No streams. Add one, or add a stream seen on the network.',
+      columns: [
+        { key: 'id', label: 'ID', type: 'number', editable: false },
+        { key: 'name', label: 'Stream Name' },
+        { key: 'group', label: 'Multicast Group IP', mono: true,
+          cellClass: (v, row) => (this.model.checkCollisions().some((c) => c.id === row.id) ? 'moip-collision' : '') },
+        { key: 'port', label: 'UDP Port', type: 'number' },
+        { key: 'channels', label: 'Chs', type: 'number' },
+        { key: 'format', label: 'Encoding Format' },
+        { key: 'bandwidthMbps', label: 'Bitrate (Mbps)', type: 'number' },
+        { key: 'redundancy', label: 'Redundancy', type: 'select', options: REDUNDANCY },
+        { key: 'status', label: 'Status', editable: false },
+      ],
+      rows: this.model.streams,
+      onEdit: (i, key, value) => {
+        this.model.updateStream(i, key, value);
         this.render();
-        this.bridge.notifyChanged();
-      });
-    });
-
-    this.tableBody.querySelectorAll('select.control-select').forEach(sel => {
-      sel.addEventListener('change', (e) => {
-        const idx = parseInt(e.target.dataset.idx, 10);
-        const field = e.target.dataset.field;
-        this.model.updateStream(idx, field, e.target.value);
-        this.renderSvg();
-        this.bridge.notifyChanged();
-      });
-    });
-
-    this.tableBody.querySelectorAll('.btn-delete').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const idx = parseInt(e.target.dataset.idx, 10);
-        this.model.removeStream(idx);
+        this.changed();
+      },
+      onDelete: (i) => {
+        this.model.streams.splice(i, 1);
         this.render();
-        this.bridge.notifyChanged();
-      });
+        this.seenTable?.setRows(this.seenStreams);
+        this.changed();
+      },
     });
   }
 
@@ -212,12 +252,12 @@ export class MoipApp {
     let rowsSvg = '';
     this.model.streams.forEach((s, idx) => {
       const y = 35 + idx * rowH;
-      const isRedundant = s.redundancy.includes('2022-7') || s.redundancy.includes('Redundant');
+      const isRedundant = /2022-7|Redundant|Secondary/.test(String(s.redundancy || ''));
 
       rowsSvg += `
         <!-- Sender Node -->
         <rect x="25" y="${y}" width="140" height="24" rx="4" fill="#18181b" stroke="#2B3C5D" stroke-width="1"/>
-        <text x="35" y="${y + 16}" fill="#F4902C" font-size="10" font-family="JetBrains Mono, monospace">${s.name}</text>
+        <text x="35" y="${y + 16}" fill="#F4902C" font-size="10" font-family="JetBrains Mono, monospace">${esc(s.name)}</text>
 
         <!-- Primary Flow (Blue) -->
         <line x1="165" y1="${y + 8}" x2="455" y2="${y + 8}" stroke="#4A9EFF" stroke-width="2"/>
@@ -231,11 +271,11 @@ export class MoipApp {
 
         <!-- Multicast IP & Port Badge -->
         <rect x="230" y="${y - 4}" width="160" height="16" rx="3" fill="#121212" stroke="#2c2c2c" stroke-width="1"/>
-        <text x="310" y="${y + 8}" fill="#888888" font-size="9" font-family="JetBrains Mono, monospace" text-anchor="middle">${s.group}:${s.port}</text>
+        <text x="310" y="${y + 8}" fill="#888888" font-size="9" font-family="JetBrains Mono, monospace" text-anchor="middle">${esc(s.group)}:${esc(s.port)}</text>
 
         <!-- Receiver / Fabric Node -->
         <rect x="455" y="${y}" width="160" height="24" rx="4" fill="#18181b" stroke="#2B3C5D" stroke-width="1"/>
-        <text x="465" y="${y + 16}" fill="#4ADE80" font-size="10" font-family="sans-serif">${s.format} (${s.channels} Ch)</text>
+        <text x="465" y="${y + 16}" fill="#4ADE80" font-size="10" font-family="sans-serif">${esc(s.format)} (${esc(s.channels)} Ch)</text>
       `;
     });
 
