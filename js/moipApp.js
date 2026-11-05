@@ -105,7 +105,18 @@ export class MoipApp {
         });
         continue;
       }
+      let warned = false;   // one card per feed per outage, not one per message
       link.subscribe(topic, (t, text) => {
+        let readable = true;
+        if (text) { try { JSON.parse(text); } catch (_) { readable = false; } }
+        if (!readable && !warned) {
+          warned = true;
+          S.showProblem('bad_json', {
+            subject: `${feed.proto} flow feed`,
+            detail: `${topic} carried something that is not JSON, so its streams are not shown`,
+            fix: [`Check the ${feed.proto} plugin that publishes ${topic} is running and current (DockTor).`],
+          });
+        } else if (readable) warned = false;
         flows[topic] = streamsFromFlows(parseFlows(text, feed.shape), rules);
         draw();
       });
