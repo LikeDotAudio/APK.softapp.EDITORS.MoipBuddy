@@ -3,7 +3,6 @@
 
 import { MoipStreamModel } from './moipModel.js';
 import { parseFlows, streamsFromFlows, streamRow } from './moipDiscovered.js';
-import { mountDiscovered, loadRules } from './discoveredTable.js';
 
 const esc = (s) => window.APKSoftapp.esc(s);
 const REDUNDANCY = ['', 'Hitless ST 2022-7', 'Single Flow', 'Dante Secondary'];
@@ -25,6 +24,29 @@ export class MoipApp {
     this.seenStreams = [];
     this.tableHost = document.getElementById('streams-table');
     this.svgContainer = document.getElementById('pipeline-svg');
+    window.APKSoftapp.describe({
+      name: 'MoIP Stream Buddy',
+      does: 'Plans the multicast media streams of one pool (group, port, channels, format, bitrate, redundancy) and flags collisions.',
+      inputs: [
+        { name: 'MoIP stream block', from: 'the CAD block this editor was opened on (host@1 load)', kind: 'cad' },
+        { name: 'Block file', from: '.json picked with Open Block', kind: 'file' },
+        { name: 'Media devices', from: 'APKSoftapp.discovered() on the bus, kinds from config/discovery.json', kind: 'bus' },
+        { name: 'Streams on the bus', from: 'each config/discovery.json flowFeed', kind: 'bus', topic: 'System/Protocols/<proto>/<path> (e.g. dante/Flows)' },
+      ],
+      outputs: [
+        { name: 'MoIP stream block', to: 'the CAD drawing on Save & Return, or a .json download standalone', kind: 'cad' },
+        { name: 'Live edits', to: 'the CAD after every change (blockChanged)', kind: 'cad' },
+      ],
+      controls: [
+        { name: '+ Add MoIP Stream', how: 'adds a planned stream' },
+        { name: 'Stream table', how: 'edit name, multicast group, UDP port, channels, format, bitrate, redundancy; the row × deletes it' },
+        { name: 'Add (seen streams)', how: 'takes a stream the bus carries into the plan' },
+        { name: '⚡ Discovered', how: 'show / hide the bus panel' },
+        { name: 'Stream Pool Name', how: 'the pool name saved in the block' },
+        { name: 'Save & Return / ✕', how: 'save into the CAD (or download) / close the editor' },
+      ],
+      problems: ['bad_json', 'bad_input', 'file_unreadable', 'bus_missing', 'http_not_found', 'config_invalid', 'not_in_cad'],
+    });
     this.initControls();
     this.render();
     this.autoConnect();
@@ -42,16 +64,24 @@ export class MoipApp {
     const fail = (why) => { if (status) { status.setAttribute('data-apk-state', 'dead'); status.textContent = why; } };
     let rules;
     try {
-      rules = await loadRules(import.meta.url);
+      const cfg = await window.APKSoftapp.discoveredConfig(new URL('../config/discovery.json', import.meta.url), { required: true });
+      if (cfg.problem) throw Object.assign(new Error(cfg.why), { problem: cfg.problem });
+      rules = cfg;
     } catch (err) {
-      return fail(`Could not read config/discovery.json (${err.message}).`);
+      fail(`Could not read config/discovery.json (${err.message}).`);
+      window.APKSoftapp.showProblem(err.problem || err, {
+        subject: 'config/discovery.json',
+        fix: ['config/discovery.json sits beside index.html in EDITORS.MoipBuddy; it names the media device kinds and the flow feeds to read.'],
+        onRetry: () => this.autoConnect(),
+      });
+      return;
     }
     this.rules = rules;
     this.flowTable();
     const devices = document.getElementById('net-table');
     if (devices) {
-      this.network = await mountDiscovered({
-        host: devices, status, id: 'moip-devices', kinds: rules.kinds,
+      this.network = await window.APKSoftapp.discoveredPanel(devices, {
+        status, id: 'moip-devices', config: rules,
         empty: 'No media device on the bus yet.',
       });
     }
@@ -67,7 +97,14 @@ export class MoipApp {
     };
     for (const feed of rules.flowFeeds || []) {
       let topic;
-      try { topic = C.Topics.protocols.topic({ proto: feed.proto, path: feed.path }); } catch (_) { continue; }
+      try { topic = C.Topics.protocols.topic({ proto: feed.proto, path: feed.path }); } catch (err) {
+        S.showProblem('config_invalid', {
+          subject: 'config/discovery.json flowFeeds',
+          detail: `${JSON.stringify(feed)}: ${err.message}`,
+          fix: ['Each flowFeeds entry needs a proto and a path array, e.g. { "proto": "dante", "path": ["Flows"], "shape": "dante-flowview" }; then reload.'],
+        });
+        continue;
+      }
       link.subscribe(topic, (t, text) => {
         flows[topic] = streamsFromFlows(parseFlows(text, feed.shape), rules);
         draw();
@@ -143,9 +180,13 @@ export class MoipApp {
               this.render();
               this.changed();
             } catch (err) {
-              alert('Invalid block file: ' + err.message);
+              window.APKSoftapp.showProblem(err.name === 'SyntaxError' ? 'bad_json' : 'bad_input', {
+                subject: file.name, detail: err.message,
+                fix: ['Open a MoIP stream block (.json saved by this editor, blockType moip_streams).'],
+              });
             }
           };
+          reader.onerror = () => window.APKSoftapp.showProblem('file_unreadable', { subject: file.name, detail: reader.error && reader.error.message });
           reader.readAsText(file);
         };
         input.click();
