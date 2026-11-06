@@ -3,6 +3,7 @@
 
 import { MoipStreamModel } from './moipModel.js';
 import { parseFlows, streamsFromFlows, streamRow } from './moipDiscovered.js';
+import { loadSystems, saveStreams, systemsToStreams, exportSiteIfc } from './moipBench.js';
 
 const esc = (s) => window.APKSoftapp.esc(s);
 const REDUNDANCY = ['', 'Hitless ST 2022-7', 'Single Flow', 'Dante Secondary'];
@@ -32,10 +33,13 @@ export class MoipApp {
         { name: 'Block file', from: '.json picked with Open Block', kind: 'file' },
         { name: 'Media devices', from: 'APKSoftapp.discovered() on the bus, kinds from config/discovery.json', kind: 'bus' },
         { name: 'Streams on the bus', from: 'each config/discovery.json flowFeed', kind: 'bus', topic: 'System/Protocols/<proto>/<path> (e.g. dante/Flows)' },
+        { name: 'The bench plan', from: 'DATABASE.server.BIM GET /api/bim/bench/systems on ⇩ From bench (each stream with its IfcGlobalId)' },
       ],
       outputs: [
         { name: 'MoIP stream block', to: 'the CAD drawing on Save & Return, or a .json download standalone', kind: 'cad' },
         { name: 'Live edits', to: 'the CAD after every change (blockChanged)', kind: 'cad' },
+        { name: 'The bench plan', to: 'DATABASE.server.BIM bench systems on ⇧ To bench: each stream an IfcDistributionCircuit' },
+        { name: 'Site model', to: 'a site.ifc download on ⬇ Export IFC (GET /api/bim/site.ifc)', kind: 'file' },
       ],
       controls: [
         { name: '+ Add MoIP Stream', how: 'adds a planned stream' },
@@ -44,8 +48,10 @@ export class MoipApp {
         { name: '⚡ Discovered', how: 'show / hide the bus panel' },
         { name: 'Stream Pool Name', how: 'the pool name saved in the block' },
         { name: 'Save & Return / ✕', how: 'save into the CAD (or download) / close the editor' },
+        { name: '⇩ From bench / ⇧ To bench', how: 'read the planned streams from the BIM bench / plan these there (rows without a multicast group and port stay here)' },
+        { name: '⬇ Export IFC', how: 'download the site model (site.ifc)' },
       ],
-      problems: ['bad_json', 'bad_input', 'file_unreadable', 'bus_missing', 'http_not_found', 'config_invalid', 'not_in_cad'],
+      problems: ['bad_json', 'bad_input', 'file_unreadable', 'bus_missing', 'http_not_found', 'config_invalid', 'not_in_cad', 'http_forbidden', 'http_server_error'],
     });
     this.initControls();
     this.render();
@@ -159,6 +165,51 @@ export class MoipApp {
     return b;
   }
 
+  /** ⇩ From bench: the bench's planned streams replace the table; the collision check runs on them. */
+  async fromBench() {
+    try {
+      this.model.streams = systemsToStreams(await loadSystems());
+      this.model.nextId = this.model.streams.length + 1;
+      this.render();
+      this.changed();
+      return this.model.streams;
+    } catch (err) {
+      window.APKSoftapp.showProblem(err, { subject: 'the bench plan', fix: ['The plan is the BIM bench (DATABASE.server.BIM, /api/bim): check it is running in DockTor.'], onRetry: () => this.fromBench() });
+      return null;
+    }
+  }
+
+  /** ⇧ To bench: these streams become the bench's stream plan (and so IfcDistributionCircuits). */
+  async toBench() {
+    try {
+      const { items, skipped } = await saveStreams(this.model.streams);
+      const kept = skipped;
+      this.model.streams = [...systemsToStreams(items), ...kept];
+      this.model.nextId = this.model.streams.length + 1;
+      this.model.streams.forEach((s, i) => { s.id = i + 1; });
+      this.render();
+      return items;
+    } catch (err) {
+      window.APKSoftapp.showProblem(err, { subject: 'plan on the bench', fix: ['A planned stream has a multicast group (239.x.x.x) and a UDP port, once per group:port.'], onRetry: () => this.toBench() });
+      return null;
+    }
+  }
+
+  /** ⬇ Export IFC: the site model as an .ifc download (no IFC parser in the page). */
+  async exportIfc() {
+    try {
+      const text = await exportSiteIfc();
+      const url = URL.createObjectURL(new Blob([text], { type: 'model/step' }));
+      const a = Object.assign(document.createElement('a'), { href: url, download: 'site.ifc' });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return text;
+    } catch (err) {
+      window.APKSoftapp.showProblem(err, { subject: 'site.ifc', onRetry: () => this.exportIfc() });
+      return null;
+    }
+  }
+
   handleBlockLoaded(block, meta) {
     if (block) {
       this.model.fromBlock(block);
@@ -203,6 +254,10 @@ export class MoipApp {
         input.click();
       });
     }
+
+    document.getElementById('btn-from-bench')?.addEventListener('click', () => this.fromBench());
+    document.getElementById('btn-to-bench')?.addEventListener('click', () => this.toBench());
+    document.getElementById('btn-export-ifc')?.addEventListener('click', () => this.exportIfc());
 
     const btnClose = document.getElementById('btn-close');
     if (btnClose) {

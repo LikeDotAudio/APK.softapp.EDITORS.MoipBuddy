@@ -1,0 +1,115 @@
+// Part of the APK.audio project — http://APK.audio — made by Anthony Kuzub
+// MIT Licence. Free, for everyone, for ever. Full text in LICENSE at the root.
+/* THE STREAM PLAN ON THE BENCH (IFC-CORE-DELTAS network-discovery-4/7).
+
+   A planned media stream lives once, in the BIM bench document (DATABASE.server.BIM
+   bim/network.py) as a system of kind 'stream': GET /api/bim/bench/systems,
+   PUT / DELETE /api/bim/bench/systems/<id>. Its IFC is an IfcDistributionCircuit
+   (APK_MediaStream: MulticastGroup, UdpPort, Format, Channels, BandwidthMbps,
+   Redundancy) with its sender and receiver ports grouped.
+
+     stream row {name, group, port, channels, format, bandwidthMbps, redundancy}
+       <->  {kind:'stream', name, group, port, channels, format, bandwidth_mbps, redundancy, transport?}
+
+   It is a PLAN: the status column, IS-05 activations and IS-07 events stay NMOS
+   and the bus; NMOS IS-05 still routes. A stream the bench holds keeps its VLAN
+   (parent) and its sender / receiver members. A row with no multicast group or
+   port is not a plan yet and is not sent. */
+
+export function bimApi() {
+  try {
+    const fromUrl = new URLSearchParams(globalThis.location?.search || '').get('bim');
+    if (fromUrl) return fromUrl.replace(/\/$/, '');
+  } catch (_) { /* no location under node */ }
+  return (globalThis.APK_BIM_API || '/api/bim').replace(/\/$/, '');
+}
+
+const MULTICAST = /^(22[4-9]|23\d)\.\d{1,3}\.\d{1,3}\.\d{1,3}$|^ff[0-9a-f]{2}:/i;
+const key = (group, port) => `${String(group).toLowerCase()}:${Number(port)}`;
+const streamId = (group, port) => `F-${String(group).replace(/[^0-9A-Za-z]+/g, '-')}-${Number(port)}`;
+
+/** Is the row a plan the bench takes (a multicast group and a UDP port)? */
+export function isPlan(s) {
+  const port = Number(s?.port);
+  return MULTICAST.test(String(s?.group || '')) && Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+/** The bench's stream systems → the editor's rows (ids numbered here; status is not the plan's). */
+export function systemsToStreams(items) {
+  return items.filter(s => s.kind === 'stream').map((s, i) => {
+    const row = { id: i + 1, name: s.name || '', group: s.group, port: s.port };
+    if (s.channels !== undefined) row.channels = s.channels;
+    if (s.format !== undefined) row.format = s.format;
+    if (s.bandwidth_mbps !== undefined) row.bandwidthMbps = s.bandwidth_mbps;
+    if (s.redundancy !== undefined) row.redundancy = s.redundancy;
+    if (s.transport !== undefined) row.transport = s.transport;
+    row.benchId = s.id;
+    row.guid = s.guid;
+    return row;
+  });
+}
+
+/** The editor's rows → the PUTs and DELETEs that make them the bench's stream plan. */
+export function streamsToSystems(streams, existing = []) {
+  const byId = new Map(existing.filter(s => s.kind === 'stream').map(s => [s.id, s]));
+  const byKey = new Map(existing.filter(s => s.kind === 'stream').map(s => [key(s.group, s.port), s]));
+  const puts = [];
+  const skipped = [];
+  for (const s of streams) {
+    if (!isPlan(s)) { skipped.push(s); continue; }
+    const old = byId.get(s.benchId) || byKey.get(key(s.group, s.port));
+    const row = {
+      id: old?.id || streamId(s.group, s.port), kind: 'stream', name: s.name || undefined,
+      group: String(s.group), port: Number(s.port),
+      channels: Number.isInteger(Number(s.channels)) && Number(s.channels) > 0 ? Number(s.channels) : undefined,
+      format: s.format || undefined,
+      bandwidth_mbps: Number(s.bandwidthMbps) > 0 ? Number(s.bandwidthMbps) : undefined,
+      redundancy: s.redundancy || undefined,
+      transport: s.transport || old?.transport || undefined,
+      parent: old?.parent, members: old?.members,
+    };
+    puts.push(JSON.parse(JSON.stringify(row)));
+  }
+  const keep = new Set(puts.map(p => p.id));
+  if (keep.size !== puts.length) throw Object.assign(new Error('two rows plan the same group:port'), { code: 'bad_input' });
+  const deletes = existing.filter(s => s.kind === 'stream' && !keep.has(s.id)).map(s => s.id);
+  return { puts, deletes, skipped };
+}
+
+async function answer(res, what) {
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(`${what}: ${body.error || res.status}`);
+    err.status = res.status;
+    err.code = res.status === 401 || res.status === 403 ? 'http_forbidden' : res.status === 404 ? 'http_not_found'
+      : res.status >= 500 ? 'http_server_error' : 'bad_input';
+    throw err;
+  }
+  return body;
+}
+
+export async function loadSystems({ api = bimApi(), fetchImpl = globalThis.fetch } = {}) {
+  return (await answer(await fetchImpl(`${api}/bench/systems`), 'read the bench plan')).items || [];
+}
+
+/** Write the rows as the bench's stream plan; answers {items, skipped}. */
+export async function saveStreams(streams, { api = bimApi(), fetchImpl = globalThis.fetch } = {}) {
+  const { puts, deletes, skipped } = streamsToSystems(streams, await loadSystems({ api, fetchImpl }));
+  for (const row of puts) {
+    const { id, ...body } = row;
+    await answer(await fetchImpl(`${api}/bench/systems/${encodeURIComponent(id)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }), `plan ${row.name || id}`);
+  }
+  for (const id of deletes) {
+    await answer(await fetchImpl(`${api}/bench/systems/${encodeURIComponent(id)}`, { method: 'DELETE' }), `remove ${id}`);
+  }
+  return { items: await loadSystems({ api, fetchImpl }), skipped };
+}
+
+/** The site model as IFC4X3 (GET /api/bim/site.ifc). */
+export async function exportSiteIfc({ api = bimApi(), fetchImpl = globalThis.fetch } = {}) {
+  const res = await fetchImpl(`${api}/site.ifc`);
+  if (!res.ok) throw Object.assign(new Error(`site.ifc: ${res.status}`), { status: res.status, code: res.status === 404 ? 'http_not_found' : 'http_server_error' });
+  return res.text();
+}
