@@ -1,6 +1,6 @@
 {
   "name": "moip-stream-buddy",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Media over IP Stream Buddy on APK.audio",
   "type": "module",
   "scripts": {
