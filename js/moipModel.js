@@ -1,9 +1,15 @@
 // Part of the APK.audio project — http://APK.audio — made by Anthony Kuzub
 // MIT Licence. Free, for everyone, for ever. Full text in LICENSE at the root.
+/* The rows are the editor's working copy; the plan is the BIM bench
+   (moipBench.js). The CAD block keeps only the ids of the bench streams the
+   rows plan (ROAD-3582); an old block's streams[] still loads. */
+import { readBlock, systemIdsOf } from './moipBench.js';
 
 export class MoipStreamModel {
   constructor(streamPoolName = 'CAMPUS-MOIP-FABRIC') {
     this.streamPoolName = streamPoolName;
+    this.systems = null;   // the ids a loaded block named (null: none loaded)
+    this.legacy = false;   // rows from an old block that carried its own streams[]
     this.streams = [
       { id: 1, name: 'DANTE-CH1-8', group: '239.69.10.1', port: 5004, channels: 8, format: 'L24/48k', bandwidthMbps: 6.5, redundancy: 'Hitless ST 2022-7', status: 'Active' },
       { id: 2, name: 'ST2110-30-MAIN', group: '239.69.10.2', port: 5004, channels: 2, format: 'L24/48k', bandwidthMbps: 2.1, redundancy: 'Hitless ST 2022-7', status: 'Active' },
@@ -74,19 +80,30 @@ export class MoipStreamModel {
     return collisions;
   }
 
+  /** {type, id, streamPoolName, systems: [ids]} — the bench streams these rows plan, no copy of them. */
   toBlock() {
     return {
       type: 'moip_streams',
       id: `moip_${this.streamPoolName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
       streamPoolName: this.streamPoolName,
-      streams: JSON.parse(JSON.stringify(this.streams))
+      systems: systemIdsOf(this.streams),
     };
   }
 
+  /** Load a block. Ids: `systems` is set and the rows wait for the bench (MoipApp.loadScope).
+      An old block's streams[]: the rows load as they were and `legacy` says they are not on the bench yet. */
   fromBlock(block = {}) {
-    if (block.streamPoolName) this.streamPoolName = block.streamPoolName;
-    if (Array.isArray(block.streams)) {
-      this.streams = JSON.parse(JSON.stringify(block.streams));
+    const b = readBlock(block);
+    if (b.streamPoolName) this.streamPoolName = b.streamPoolName;
+    if (b.systems) {
+      this.systems = b.systems;
+      this.legacy = false;
+      this.streams = [];
+      this.nextId = 1;
+    } else if (b.streams) {
+      this.systems = null;
+      this.legacy = true;
+      this.streams = b.streams;
       this.nextId = this.streams.reduce((m, s) => Math.max(m, Number(s.id) || 0), 0) + 1;
     }
   }

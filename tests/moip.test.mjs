@@ -25,9 +25,18 @@ test('MoipStreamModel detects collisions and serializes block schema', () => {
   const block = m.toBlock();
   assert.equal(block.type, 'moip_streams');
   assert.equal(block.streamPoolName, 'BROADCAST-FABRIC');
+  assert.equal(block.streams, undefined, 'no private copy of the plan (ROAD-3582)');
+  assert.deepEqual(block.systems, ['F-239-69-10-1-5004', 'F-239-69-10-2-5004', 'F-239-100-1-1-20000'], 'one id per group:port');
 
   const restored = new MoipStreamModel();
   restored.fromBlock(block);
   assert.equal(restored.streamPoolName, 'BROADCAST-FABRIC');
-  assert.equal(restored.streams.length, 4);
+  assert.deepEqual(restored.systems, block.systems);
+  assert.equal(restored.streams.length, 0, 'the rows come from the bench (MoipApp.loadScope)');
+
+  const old = new MoipStreamModel();
+  old.fromBlock({ type: 'moip_streams', streamPoolName: 'OLD', streams: m.streams });
+  assert.equal(old.legacy, true);
+  assert.equal(old.streams.length, 4, 'an old block with streams[] still loads');
+  assert.equal(old.nextId, 5);
 });

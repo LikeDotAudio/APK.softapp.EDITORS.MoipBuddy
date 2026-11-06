@@ -3,7 +3,7 @@
 
 import { MoipStreamModel } from './moipModel.js';
 import { parseFlows, streamsFromFlows, streamRow } from './moipDiscovered.js';
-import { loadSystems, saveStreams, systemsToStreams, exportSiteIfc } from './moipBench.js';
+import { loadSystems, saveStreams, systemsToStreams, exportSiteIfc, scopeOf } from './moipBench.js';
 
 const esc = (s) => window.APKSoftapp.esc(s);
 const REDUNDANCY = ['', 'Hitless ST 2022-7', 'Single Flow', 'Dante Secondary'];
@@ -36,7 +36,7 @@ export class MoipApp {
         { name: 'The bench plan', from: 'DATABASE.server.BIM GET /api/bim/bench/systems on ⇩ From bench (each stream with its IfcGlobalId)' },
       ],
       outputs: [
-        { name: 'MoIP stream block', to: 'the CAD drawing on Save & Return, or a .json download standalone', kind: 'cad' },
+        { name: 'MoIP stream block', to: 'the CAD drawing on Save & Return (after the rows are planned on the bench), or a .json download standalone: {streamPoolName, systems: [bench stream ids]}, no copy of the plan', kind: 'cad' },
         { name: 'Live edits', to: 'the CAD after every change (blockChanged)', kind: 'cad' },
         { name: 'The bench plan', to: 'DATABASE.server.BIM bench systems on ⇧ To bench: each stream an IfcDistributionCircuit' },
         { name: 'Site model', to: 'a site.ifc download on ⬇ Export IFC (GET /api/bim/site.ifc)', kind: 'file' },
@@ -47,7 +47,7 @@ export class MoipApp {
         { name: 'Add (seen streams)', how: 'takes a stream the bus carries into the plan' },
         { name: '⚡ Discovered', how: 'show / hide the bus panel' },
         { name: 'Stream Pool Name', how: 'the pool name saved in the block' },
-        { name: 'Save & Return / ✕', how: 'save into the CAD (or download) / close the editor' },
+        { name: 'Save & Return / ✕', how: 'plan the rows on the bench, then save the block (their bench ids) into the CAD (or download) / close the editor' },
         { name: '⇩ From bench / ⇧ To bench', how: 'read the planned streams from the BIM bench / plan these there (rows without a multicast group and port stay here)' },
         { name: '⬇ Export IFC', how: 'download the site model (site.ifc)' },
       ],
@@ -170,6 +170,8 @@ export class MoipApp {
     try {
       this.model.streams = systemsToStreams(await loadSystems());
       this.model.nextId = this.model.streams.length + 1;
+      this.owned = this.model.streams.map((s) => s.benchId);
+      this.model.legacy = false;
       this.render();
       this.changed();
       return this.model.streams;
@@ -179,12 +181,39 @@ export class MoipApp {
     }
   }
 
-  /** ⇧ To bench: these streams become the bench's stream plan (and so IfcDistributionCircuits). */
+  /** The streams a block names, read from the bench (a block keeps only ids, ROAD-3582). */
+  async loadScope() {
+    const ids = this.model.systems || [];
+    try {
+      const { items, missing } = scopeOf(await loadSystems(), ids);
+      this.model.streams = systemsToStreams(items);
+      this.model.nextId = this.model.streams.length + 1;
+      this.owned = this.model.streams.map((s) => s.benchId);
+      this.render();
+      if (missing.length) {
+        window.APKSoftapp.showProblem('http_not_found', {
+          subject: 'the bench plan', detail: `This block names ${missing.join(', ')}, which the bench does not hold.`,
+          fix: ['Someone removed them from the bench plan; add the streams again and Save & Return, or ⇩ From bench for the whole plan.'],
+        });
+      }
+      return this.model.streams;
+    } catch (err) {
+      window.APKSoftapp.showProblem(err, { subject: 'the bench plan', detail: `This block names ${ids.join(', ') || 'no streams'} on the BIM bench.`, fix: ['The plan is the BIM bench (DATABASE.server.BIM, /api/bim): check it is running in DockTor.'], onRetry: () => this.loadScope() });
+      return null;
+    }
+  }
+
+  /** ⇧ To bench: these streams become the bench's stream plan (and so IfcDistributionCircuits).
+      Only streams this block planned when it was loaded are ever removed (`owned`). */
   async toBench() {
     try {
-      const { items, skipped } = await saveStreams(this.model.streams);
+      const { items, skipped } = await saveStreams(this.model.streams, { owned: this.owned || [] });
       const kept = skipped;
-      this.model.streams = [...systemsToStreams(items), ...kept];
+      const mine = this.model.streams.filter((s) => !skipped.includes(s)).map((s) => `${String(s.group).toLowerCase()}:${Number(s.port)}`);
+      const planned = items.filter((r) => r.kind === 'stream' && mine.includes(`${String(r.group).toLowerCase()}:${Number(r.port)}`));
+      this.owned = planned.map((r) => r.id);
+      this.model.legacy = false;
+      this.model.streams = [...systemsToStreams(planned), ...kept];
       this.model.nextId = this.model.streams.length + 1;
       this.model.streams.forEach((s, i) => { s.id = i + 1; });
       this.render();
@@ -210,19 +239,36 @@ export class MoipApp {
     }
   }
 
+  /** A block names bench ids (read them from the bench); an old one carries its rows (kept as they are
+      until Save & Return moves them onto the bench). */
   handleBlockLoaded(block, meta) {
-    if (block) {
-      this.model.fromBlock(block);
-      this.render();
+    if (!block) return;
+    this.model.fromBlock(block);
+    this.owned = [];
+    this.render();
+    if (this.model.systems) this.loadScope();
+  }
+
+  /** Save & Return: the rows go onto the bench first, then the block — their ids — into the CAD.
+      A draft row (no multicast group:port) is not a plan and so is not in the block: it is named. */
+  async saveBlock() {
+    if (!(await this.toBench())) return null;
+    const drafts = this.model.streams.filter((s) => !s.benchId);
+    if (drafts.length) {
+      window.APKSoftapp.showProblem('bad_input', {
+        subject: 'drafts not saved', detail: `${drafts.map((s) => s.name || '(unnamed)').join(', ')}: no multicast group and UDP port yet, so not on the bench and not in the block.`,
+        fix: ['Give each a 239.x.x.x group and a port, then Save & Return again.'],
+      });
     }
+    const block = this.model.toBlock();
+    this.host.save(block, { name: this.model.streamPoolName, filename: block.id });
+    return block;
   }
 
   initControls() {
     const btnSave = document.getElementById('btn-save');
     if (btnSave) {
-      btnSave.addEventListener('click', () => {
-        this.host.save(this.model.toBlock(), { name: this.model.streamPoolName, filename: this.model.toBlock().id });
-      });
+      btnSave.addEventListener('click', () => this.saveBlock());
     }
 
     const btnOpen = document.getElementById('btn-open');
@@ -238,13 +284,12 @@ export class MoipApp {
           reader.onload = (evt) => {
             try {
               const data = JSON.parse(evt.target.result);
-              this.model.fromBlock(data);
-              this.render();
+              this.handleBlockLoaded(data);
               this.changed();
             } catch (err) {
               window.APKSoftapp.showProblem(err.name === 'SyntaxError' ? 'bad_json' : 'bad_input', {
                 subject: file.name, detail: err.message,
-                fix: ['Open a MoIP stream block (.json saved by this editor, blockType moip_streams).'],
+                fix: ['Open a MoIP stream block (.json saved by this editor, blockType moip_streams: {streamPoolName, systems} or an old one with streams).'],
               });
             }
           };

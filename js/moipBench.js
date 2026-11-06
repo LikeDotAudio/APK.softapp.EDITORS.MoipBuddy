@@ -14,7 +14,13 @@
    It is a PLAN: the status column, IS-05 activations and IS-07 events stay NMOS
    and the bus; NMOS IS-05 still routes. A stream the bench holds keeps its VLAN
    (parent) and its sender / receiver members. A row with no multicast group or
-   port is not a plan yet and is not sent. */
+   port is not a plan yet and is not sent.
+
+   THE CAD BLOCK KEEPS ONLY IDS (ROAD-3582). A moip_streams block is
+   {type, id, streamPoolName, systems: [stream ids]} — never a private
+   streams[] copy (contracts BimSystemsRefSchema). An old block that still
+   carries streams[] stays readable (readBlock); Save & Return moves its rows
+   onto the bench and keeps their ids. */
 
 export function bimApi() {
   try {
@@ -26,12 +32,37 @@ export function bimApi() {
 
 const MULTICAST = /^(22[4-9]|23\d)\.\d{1,3}\.\d{1,3}\.\d{1,3}$|^ff[0-9a-f]{2}:/i;
 const key = (group, port) => `${String(group).toLowerCase()}:${Number(port)}`;
-const streamId = (group, port) => `F-${String(group).replace(/[^0-9A-Za-z]+/g, '-')}-${Number(port)}`;
+export const streamId = (group, port) => `F-${String(group).replace(/[^0-9A-Za-z]+/g, '-')}-${Number(port)}`;
 
 /** Is the row a plan the bench takes (a multicast group and a UDP port)? */
 export function isPlan(s) {
   const port = Number(s?.port);
   return MULTICAST.test(String(s?.group || '')) && Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+/** The bench ids of the rows that are plans (a draft row with no group:port has none yet). */
+export function systemIdsOf(streams = []) {
+  const out = [];
+  for (const s of streams) {
+    if (!isPlan(s)) continue;
+    const id = s.benchId || streamId(s.group, s.port);
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** A moip_streams block, either shape: {streamPoolName, systems} (ids, today) or {streamPoolName, streams} (old). */
+export function readBlock(block = {}) {
+  const out = { streamPoolName: typeof block.streamPoolName === 'string' && block.streamPoolName ? block.streamPoolName : null, systems: null, streams: null };
+  if (Array.isArray(block.systems)) out.systems = block.systems.filter(id => typeof id === 'string' && id);
+  else if (Array.isArray(block.streams)) out.streams = JSON.parse(JSON.stringify(block.streams));
+  return out;
+}
+
+/** The bench streams a block's ids name, in the block's order; `missing` = ids the bench lacks. */
+export function scopeOf(items = [], ids = []) {
+  const byId = new Map(items.filter(s => s.kind === 'stream').map(s => [s.id, s]));
+  return { items: ids.filter(id => byId.has(id)).map(id => byId.get(id)), missing: ids.filter(id => !byId.has(id)) };
 }
 
 /** The bench's stream systems → the editor's rows (ids numbered here; status is not the plan's). */
@@ -49,8 +80,10 @@ export function systemsToStreams(items) {
   });
 }
 
-/** The editor's rows → the PUTs and DELETEs that make them the bench's stream plan. */
-export function streamsToSystems(streams, existing = []) {
+/** The editor's rows → the PUTs and DELETEs that make them the bench's stream plan.
+    `owned` (the ids this block planned when loaded) limits the DELETEs to this block's own streams;
+    without it every bench stream the rows do not hold is removed (the whole-plan view). */
+export function streamsToSystems(streams, existing = [], owned = null) {
   const byId = new Map(existing.filter(s => s.kind === 'stream').map(s => [s.id, s]));
   const byKey = new Map(existing.filter(s => s.kind === 'stream').map(s => [key(s.group, s.port), s]));
   const puts = [];
@@ -72,7 +105,8 @@ export function streamsToSystems(streams, existing = []) {
   }
   const keep = new Set(puts.map(p => p.id));
   if (keep.size !== puts.length) throw Object.assign(new Error('two rows plan the same group:port'), { code: 'bad_input' });
-  const deletes = existing.filter(s => s.kind === 'stream' && !keep.has(s.id)).map(s => s.id);
+  const mine = owned ? new Set(owned) : null;
+  const deletes = existing.filter(s => s.kind === 'stream' && !keep.has(s.id) && (!mine || mine.has(s.id))).map(s => s.id);
   return { puts, deletes, skipped };
 }
 
@@ -93,8 +127,8 @@ export async function loadSystems({ api = bimApi(), fetchImpl = globalThis.fetch
 }
 
 /** Write the rows as the bench's stream plan; answers {items, skipped}. */
-export async function saveStreams(streams, { api = bimApi(), fetchImpl = globalThis.fetch } = {}) {
-  const { puts, deletes, skipped } = streamsToSystems(streams, await loadSystems({ api, fetchImpl }));
+export async function saveStreams(streams, { api = bimApi(), fetchImpl = globalThis.fetch, owned = null } = {}) {
+  const { puts, deletes, skipped } = streamsToSystems(streams, await loadSystems({ api, fetchImpl }), owned);
   for (const row of puts) {
     const { id, ...body } = row;
     await answer(await fetchImpl(`${api}/bench/systems/${encodeURIComponent(id)}`, {

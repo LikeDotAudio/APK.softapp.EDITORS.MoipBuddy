@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MoipStreamModel } from '../js/moipModel.js';
-import { streamsToSystems, systemsToStreams, saveStreams, isPlan, exportSiteIfc } from '../js/moipBench.js';
+import { streamsToSystems, systemsToStreams, saveStreams, isPlan, exportSiteIfc, loadSystems, readBlock, scopeOf, systemIdsOf } from '../js/moipBench.js';
 
 // The stream plan on the bench (network-discovery-4/7): rows round-trip through /api/bim/bench/systems
 // as kind 'stream' (an IfcDistributionCircuit in the IFC), members and VLAN kept, collisions still checked.
@@ -77,4 +77,31 @@ test('Export IFC is GET /api/bim/site.ifc', async () => {
   const b = bench();
   await exportSiteIfc({ api: '/api/bim', fetchImpl: b.impl });
   assert.equal(b.calls[0].url, '/api/bim/site.ifc');
+});
+
+test('an old block migrates: rows onto the bench, the block keeps their ids, the ids read the rows back; collisions still checked', async () => {
+  const b = bench([{ id: 'F-other', kind: 'stream', group: '239.9.9.9', port: 5004 }]);
+  const old = new MoipStreamModel();
+  old.fromBlock({ type: 'moip_streams', streamPoolName: 'OLD', streams: new MoipStreamModel().streams });
+  await saveStreams(old.streams, { api: '/api/bim', fetchImpl: b.impl, owned: [] });
+  assert.ok(b.rows.has('F-other'), 'a stream another pool plans is never removed by this block');
+  const block = old.toBlock();
+  const fresh = new MoipStreamModel();
+  fresh.fromBlock(block);
+  const { items, missing } = scopeOf(await loadSystems({ api: '/api/bim', fetchImpl: b.impl }), fresh.systems);
+  assert.deepEqual(missing, []);
+  fresh.streams = systemsToStreams(items);
+  assert.deepEqual(fresh.streams.map(s => [s.name, s.group, s.port, s.channels]), old.streams.map(s => [s.name, s.group, s.port, s.channels]));
+  assert.deepEqual(systemIdsOf(fresh.streams), block.systems);
+  fresh.addStream({ name: 'DUP', group: fresh.streams[0].group, port: fresh.streams[0].port });
+  assert.equal(fresh.checkCollisions().length, 1, 'checkCollisions runs on the bench-backed list');
+});
+
+test('owned limits the deletes; readBlock reads both shapes; a draft row has no id', () => {
+  const existing = [{ id: 'F-a', kind: 'stream', group: '239.1.1.1', port: 1 }, { id: 'F-b', kind: 'stream', group: '239.1.1.2', port: 1 }];
+  assert.deepEqual(streamsToSystems([], existing, ['F-a']).deletes, ['F-a']);
+  assert.deepEqual(streamsToSystems([], existing).deletes, ['F-a', 'F-b']);
+  assert.deepEqual(readBlock({ streamPoolName: 'P', systems: ['F-a'] }), { streamPoolName: 'P', systems: ['F-a'], streams: null });
+  assert.equal(readBlock({ streams: [{ group: 'x' }] }).streams.length, 1);
+  assert.deepEqual(systemIdsOf([{ name: 'draft' }, { group: '239.1.1.1', port: 1, benchId: 'F-a' }]), ['F-a']);
 });

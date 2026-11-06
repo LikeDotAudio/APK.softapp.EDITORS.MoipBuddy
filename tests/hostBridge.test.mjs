@@ -26,7 +26,8 @@ test('block round trip: load from the CAD, edit, request answers blockSave with 
   const { S, toParent, fire } = world();
   const { model } = editor(S);
   const sent = new MoipStreamModel('TRUCK-A');
-  fire({ protocol: 'cad.like.audio/host@1', type: 'load', block: sent.toBlock(), meta: { blockName: 'MOIP_A' } });
+  // an old block (its own streams[]) loads as it was …
+  fire({ protocol: 'cad.like.audio/host@1', type: 'load', block: { type: 'moip_streams', streamPoolName: sent.streamPoolName, streams: sent.streams }, meta: { blockName: 'MOIP_A' } });
   assert.equal(model.streamPoolName, 'TRUCK-A');
   assert.equal(model.nextId, 4, 'ids continue after the loaded streams');
   model.updateStream(0, 'port', '5006');
@@ -35,7 +36,9 @@ test('block round trip: load from the CAD, edit, request answers blockSave with 
   assert.equal(save.o, ORIGIN);
   assert.equal(save.m.type, 'blockSave');
   assert.equal(save.m.blockType, 'moip_streams');
-  assert.equal(save.m.block.streams[0].port, 5006);
+  // … and goes back as the bench ids it plans, no copy (ROAD-3582)
+  assert.deepEqual(save.m.block.systems, ['F-239-69-10-1-5006', 'F-239-69-10-2-5004', 'F-239-100-1-1-20000']);
+  assert.equal(save.m.block.streams, undefined);
   assert.equal(save.m.meta.blockName, 'MOIP_A');
   const contract = await hostContract();
   if (contract) for (const { m } of toParent) assert.deepEqual(contract.validateMessage(contract.schema, 'toCad', m), [], m.type);
