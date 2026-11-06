@@ -3,7 +3,7 @@
 
 import { MoipStreamModel } from './moipModel.js';
 import { parseFlows, streamsFromFlows, streamRow } from './moipDiscovered.js';
-import { loadSystems, saveStreams, systemsToStreams, exportSiteIfc, scopeOf } from './moipBench.js';
+import { loadSystems, saveStreams, systemsToStreams, exportSiteIfc, saveWithSiteTwin, scopeOf } from './moipBench.js';
 
 const esc = (s) => window.APKSoftapp.esc(s);
 const REDUNDANCY = ['', 'Hitless ST 2022-7', 'Single Flow', 'Dante Secondary'];
@@ -36,7 +36,7 @@ export class MoipApp {
         { name: 'The bench plan', from: 'DATABASE.server.BIM GET /api/bim/bench/systems on ⇩ From bench (each stream with its IfcGlobalId)' },
       ],
       outputs: [
-        { name: 'MoIP stream block', to: 'the CAD drawing on Save & Return (after the rows are planned on the bench), or a .json download standalone: {streamPoolName, systems: [bench stream ids]}, no copy of the plan', kind: 'cad' },
+        { name: 'MoIP stream block', to: 'the CAD drawing on Save & Return (after the rows are planned on the bench); standalone, <id>.json beside its .ifc twin, the bench\'s site model (Save Model): {streamPoolName, systems: [bench stream ids]}, no copy of the plan', kind: 'cad' },
         { name: 'Live edits', to: 'the CAD after every change (blockChanged)', kind: 'cad' },
         { name: 'The bench plan', to: 'DATABASE.server.BIM bench systems on ⇧ To bench: each stream an IfcDistributionCircuit' },
         { name: 'Site model', to: 'a site.ifc download on ⬇ Export IFC (GET /api/bim/site.ifc)', kind: 'file' },
@@ -51,7 +51,7 @@ export class MoipApp {
         { name: '⇩ From bench / ⇧ To bench', how: 'read the planned streams from the BIM bench / plan these there (rows without a multicast group and port stay here)' },
         { name: '⬇ Export IFC', how: 'download the site model (site.ifc)' },
       ],
-      problems: ['bad_json', 'bad_input', 'file_unreadable', 'bus_missing', 'http_not_found', 'config_invalid', 'not_in_cad', 'http_forbidden', 'http_server_error'],
+      problems: ['bad_json', 'bad_input', 'file_unreadable', 'bus_missing', 'http_not_found', 'config_invalid', 'not_in_cad', 'http_forbidden', 'http_server_error', 'save_failed'],
     });
     this.initControls();
     this.render();
@@ -249,8 +249,8 @@ export class MoipApp {
     if (this.model.systems) this.loadScope();
   }
 
-  /** Save & Return: the rows go onto the bench first, then the block — their ids — into the CAD.
-      A draft row (no multicast group:port) is not a plan and so is not in the block: it is named. */
+  /** Save & Return: the rows go onto the bench first, then the block — their ids — into the CAD (standalone,
+      the block and its .ifc twin, the bench's site model: Save Model). A draft row (no multicast group:port) is not a plan and so is not in the block: it is named. */
   async saveBlock() {
     if (!(await this.toBench())) return null;
     const drafts = this.model.streams.filter((s) => !s.benchId);
@@ -261,7 +261,7 @@ export class MoipApp {
       });
     }
     const block = this.model.toBlock();
-    this.host.save(block, { name: this.model.streamPoolName, filename: block.id });
+    await saveWithSiteTwin(window.APKSoftapp, this.host, block, { name: this.model.streamPoolName, filename: block.id }, { onRetry: () => this.saveBlock() });
     return block;
   }
 
